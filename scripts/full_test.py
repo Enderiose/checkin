@@ -129,6 +129,28 @@ def test_workbuddy_script():
         log(f"WorkBuddy check-in script test exception: {str(e)}", "ERROR")
         return False
 
+def test_web_script():
+    """Test web check-in script (config may legitimately be empty)"""
+    log("Testing web check-in script...")
+    try:
+        project = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        script_path = os.path.join(project, "scripts", "web_checkin.py")
+        if not os.path.exists(script_path):
+            log(f"Web check-in script not found: {script_path}", "ERROR")
+            return False
+        # --list exits 0 with sites and 2 when .config has none yet; both prove
+        # the script and the config parser work.
+        result = subprocess.run([sys.executable, script_path, "--list"],
+                                capture_output=True, text=True, timeout=30)
+        if result.returncode in (0, 2):
+            log("Web check-in script loaded the config successfully", "SUCCESS")
+            return True
+        log(f"Web check-in script test failed (exit {result.returncode}): {result.stderr}", "ERROR")
+        return False
+    except Exception as e:
+        log(f"Web check-in script test exception: {str(e)}", "ERROR")
+        return False
+
 def test_task_scheduler():
     """Test Task Scheduler"""
     log("Testing Task Scheduler...")
@@ -161,6 +183,7 @@ def main():
     results["config"] = test_config()
     results["trae_script"] = test_trae_script()
     results["workbuddy_script"] = test_workbuddy_script()
+    results["web_script"] = test_web_script()
     results["task_scheduler"] = test_task_scheduler()
     
     # Output summary

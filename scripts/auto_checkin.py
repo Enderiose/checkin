@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Auto Check-in Script - Handle Trae SOLO CN and WorkBuddy daily check-in
+Auto Check-in Script - Handle Trae SOLO CN, WorkBuddy and web check-in
 
 Usage:
     python scripts/auto_checkin.py              # manual / test run
@@ -56,6 +56,8 @@ try:
         WORKBUDDY_SKIP_MENU,
         WORKBUDDY_VERIFY, WORKBUDDY_READY_TIMEOUT,
         WORKBUDDY_MAX_TRIES, WORKBUDDY_CLOSE_DELAY,
+        WEB_CONFIG_PATH, WEB_CHECKIN_SCRIPT,
+        WEB_CHECKIN_TIMEOUT, WEB_HEADLESS, WEB_BROWSER,
     )
     try:
         from config import PYTHON_EXE, NODE_EXE
@@ -91,6 +93,26 @@ except Exception as _exc:                                      # noqa: BLE001
     WORKBUDDY_READY_TIMEOUT = 20
     WORKBUDDY_MAX_TRIES = 3
     WORKBUDDY_CLOSE_DELAY = 3
+    WEB_CONFIG_PATH = os.path.join(PROJECT_DIR, ".config")
+    WEB_CHECKIN_SCRIPT = os.path.join(PROJECT_DIR, "scripts", "web_checkin.py")
+    WEB_CHECKIN_TIMEOUT = 300
+    WEB_HEADLESS = True
+    WEB_BROWSER = "auto"
+
+# ============================================================
+# Stray reserved-name cleanup (e.g. a file literally named "nul")
+# ============================================================
+# Such a file appears when a redirection like `2>nul` is run from a POSIX shell
+# (git-bash) instead of cmd.exe. Windows then resolves the name to the device,
+# so a normal delete cannot touch it - scripts/clean_strays.py handles it.
+sys.path.insert(0, os.path.dirname(SCRIPT_PATH))
+try:
+    from clean_strays import clean_reserved_names
+    _CLEAN_STRAYS = clean_reserved_names
+    _STRAYS_DIR = PROJECT_DIR
+except Exception:                                              # noqa: BLE001
+    _CLEAN_STRAYS = None
+    _STRAYS_DIR = PROJECT_DIR
 
 # ============================================================
 # Logging (file + console), crash-safe
@@ -106,7 +128,7 @@ def _open_log_file():
     """Open (or create) today's log file. Falls back to %TEMP% if needed."""
     global _log_path, _log_stream
     today = datetime.now().strftime("%Y-%m-%d")
-    candidates = [LOG_DIR, os.path.join(tempfile.gettempdir(), "TWWB_checkin_logs")]
+    candidates = [LOG_DIR, os.path.join(tempfile.gettempdir(), "checkin_logs")]
     for directory in candidates:
         try:
             os.makedirs(directory, exist_ok=True)
@@ -362,8 +384,9 @@ def check_path(path, name):
     return False
 
 
-def check_all_paths():
+def check_all_paths(want=None):
     """Validate every external dependency up front, so failures are explainable."""
+    want = set(want) if want else set(ALL_TARGETS)
     log_separator("-")
     log("Validating paths and runtimes")
     log_separator("-")
@@ -378,10 +401,22 @@ def check_all_paths():
         "workbuddy_script": check_path(WORKBUDDY_CHECKIN_SCRIPT, "WorkBuddy check-in script"),
     }
 
+    # The web check-in config only matters when it is actually selected, otherwise
+    # a missing .config would produce a scary ERROR on a Trae-only run.
+    if "web" in want:
+        results["web_script"] = check_path(WEB_CHECKIN_SCRIPT, "Web check-in script")
+        results["web_config"] = check_path(WEB_CONFIG_PATH, "Web check-in config (.config)")
+    else:
+        results["web_script"] = os.path.exists(WEB_CHECKIN_SCRIPT)
+        results["web_config"] = os.path.exists(WEB_CONFIG_PATH)
+
     if results["trae_exe"] and not results["trae_script"]:
         log("Trae app exists but its check-in script is missing - Trae check-in will fail", "WARN")
     if results["workbuddy_exe"] and not results["workbuddy_script"]:
         log("WorkBuddy app exists but its check-in script is missing - WorkBuddy check-in will fail", "WARN")
+    if "web" in want and not results["web_config"]:
+        log("Web check-in config missing: %s" % WEB_CONFIG_PATH, "WARN")
+        log("  create it first:  cp .config.example .config", "WARN")
 
     return results
 
@@ -506,49 +541,123 @@ def run_workbuddy_checkin():
     return False
 
 
+def run_web_checkin():
+    """Execute the web check-in (silent HTTP first, headless browser fallback)."""
+    log_separator("-")
+    log("Starting web check-in...")
+
+    if not os.path.exists(WEB_CHECKIN_SCRIPT):
+        log("Web check-in script missing, skipping: %s" % WEB_CHECKIN_SCRIPT, "ERROR")
+        return False
+    if not os.path.exists(WEB_CONFIG_PATH):
+        log("Web check-in config missing, skipping: %s" % WEB_CONFIG_PATH, "ERROR")
+        log("  create it first:  cp .config.example .config", "ERROR")
+        return False
+
+    log("Web check-in config: %s" % WEB_CONFIG_PATH)
+    log("Web browser mode   : %s" % ("headless" if WEB_HEADLESS else "visible (debug)"))
+    log("Web browser engine : %s" % WEB_BROWSER)
+
+    cmd = [PYTHON_EXE, WEB_CHECKIN_SCRIPT]
+    if not WEB_HEADLESS:
+        cmd.append("--headful")
+
+    result = run_command(cmd, WEB_CHECKIN_TIMEOUT, "Web check-in script")
+    if result is None:
+        return False
+    if result.returncode == 0:
+        log("Web check-in successful!", "SUCCESS")
+        return True
+    if result.returncode == 2:
+        log("Web check-in configuration problem (see the log above)", "ERROR")
+        return False
+    log("Web check-in failed (exit code %s)" % result.returncode, "ERROR")
+    return False
+
+
 # ============================================================
 # Main
 # ============================================================
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="Daily check-in for Trae SOLO CN and WorkBuddy")
+        description="Daily check-in for Trae SOLO CN, WorkBuddy and web sites")
     parser.add_argument("--startup", action="store_true",
                         help="started by the Windows scheduled task: wait for the desktop first")
     parser.add_argument("--no-desktop-wait", action="store_true",
                         help="skip the desktop readiness wait even in --startup mode")
-    parser.add_argument("--target", choices=["all", "trae", "workbuddy"], default="all",
-                        help="which check-in(s) to run: trae = Trae only, workbuddy = WorkBuddy "
-                             "only, all = both (default)")
+    parser.add_argument("--target", action="append", default=None, metavar="TARGET",
+                        help="what to check in: trae, workbuddy, web, all (default), or apps "
+                             "(= trae+workbuddy). Repeatable and comma-separated, "
+                             "e.g. --target trae,web")
     return parser.parse_args(argv)
 
 
-def run(startup_mode, skip_desktop_wait=False, target="all"):
+ALL_TARGETS = ("trae", "workbuddy", "web")
+
+_TARGET_ALIASES = {
+    "all": set(ALL_TARGETS),
+    "everything": set(ALL_TARGETS),
+    "apps": {"trae", "workbuddy"},
+    "both": {"trae", "workbuddy"},   # legacy alias
+    "trae": {"trae"},
+    "workbuddy": {"workbuddy"},
+    "web": {"web"},
+}
+
+
+def parse_targets(values):
+    """Turn --target values (repeatable, comma-separated, aliases) into a set."""
+    if not values:
+        return set(ALL_TARGETS)
+    picked = set()
+    for raw in values:
+        for token in str(raw).split(","):
+            token = token.strip().lower()
+            if not token:
+                continue
+            if token not in _TARGET_ALIASES:
+                raise SystemExit("error: unknown --target '%s' (use trae, workbuddy, web, apps or all)"
+                                 % token)
+            picked |= _TARGET_ALIASES[token]
+    return picked or set(ALL_TARGETS)
+
+
+def run(startup_mode, skip_desktop_wait=False, targets=None):
+    targets = set(targets) if targets else set(ALL_TARGETS)
     log_environment(startup_mode)
     _prune_old_logs(LOG_KEEP_DAYS)
 
-    log("Check-in target    : %s" % target)
+    if _CLEAN_STRAYS is not None:
+        for _name in _CLEAN_STRAYS(_STRAYS_DIR):
+            log("Removed stray reserved-name file: %s" % _name, "WARN")
 
-    want_trae = target in ("all", "trae")
-    want_workbuddy = target in ("all", "workbuddy")
+    log("Check-in targets   : %s" % ", ".join(t for t in ALL_TARGETS if t in targets))
 
-    paths = check_all_paths()
+    want_trae = "trae" in targets
+    want_workbuddy = "workbuddy" in targets
+    want_web = "web" in targets
+
+    paths = check_all_paths(targets)
     trae_ready = want_trae and paths["trae_exe"] and paths["trae_script"]
     workbuddy_ready = want_workbuddy and paths["workbuddy_exe"] and paths["workbuddy_script"]
+    web_ready = want_web and paths["web_script"] and paths["web_config"]
 
-    if not trae_ready and not workbuddy_ready:
-        log("No runnable check-in task (target=%s; missing application or script), cannot proceed"
-            % target, "ERROR")
+    if not trae_ready and not workbuddy_ready and not web_ready:
+        log("No runnable check-in task (targets=%s; missing application, script or config), "
+            "cannot proceed" % ", ".join(sorted(targets)), "ERROR")
         return 1
 
-    if startup_mode and not skip_desktop_wait:
+    if startup_mode and not skip_desktop_wait and (trae_ready or workbuddy_ready):
         if not wait_for_desktop_ready():
             log("Aborting: desktop environment is not usable, check-in not attempted", "ERROR")
             return 1
+    elif startup_mode and not skip_desktop_wait:
+        log("Desktop readiness check skipped (no GUI check-in selected)")
     elif not startup_mode:
         log("Desktop readiness check skipped (manual run)")
 
-    results = {"trae": False, "workbuddy": False}
+    results = {"trae": False, "workbuddy": False, "web": False}
 
     if trae_ready:
         results["trae"] = run_trae_checkin()
@@ -557,30 +666,41 @@ def run(startup_mode, skip_desktop_wait=False, target="all"):
     elif want_trae:
         log("Trae SOLO CN unavailable, skipped", "WARN")
     else:
-        log("Trae SOLO CN not selected (target=%s), skipped" % target)
+        log("Trae SOLO CN not selected, skipped")
 
     if workbuddy_ready:
         results["workbuddy"] = run_workbuddy_checkin()
+        if web_ready:
+            log("Waiting %ss before the next task" % WAIT_BETWEEN_TASKS)
+            time.sleep(WAIT_BETWEEN_TASKS)
     elif want_workbuddy:
         log("WorkBuddy unavailable, skipped", "WARN")
     else:
-        log("WorkBuddy not selected (target=%s), skipped" % target)
+        log("WorkBuddy not selected, skipped")
+
+    if web_ready:
+        results["web"] = run_web_checkin()
+    elif want_web:
+        log("Web check-in unavailable, skipped", "WARN")
+    else:
+        log("Web check-in not selected, skipped")
 
     def _status(key, ready, wanted):
         if results[key]:
             return "Success"
         if not wanted:
-            return "Skipped (target=%s)" % target
+            return "Skipped (not selected)"
         return "Failed" if ready else "Skipped (unavailable)"
 
     log_separator()
     log("Check-in Results Summary:")
     log("  Trae SOLO CN : %s" % _status("trae", trae_ready, want_trae))
     log("  WorkBuddy    : %s" % _status("workbuddy", workbuddy_ready, want_workbuddy))
+    log("  Web          : %s" % _status("web", web_ready, want_web))
     log_separator()
 
     success_count = sum(results.values())
-    total_tasks = sum([trae_ready, workbuddy_ready])
+    total_tasks = sum([trae_ready, workbuddy_ready, web_ready])
 
     if success_count == total_tasks:
         log("All check-in tasks completed!", "SUCCESS")
@@ -602,7 +722,7 @@ def main(argv=None):
     _install_crash_handlers()
 
     try:
-        exit_code = run(args.startup, args.no_desktop_wait, args.target)
+        exit_code = run(args.startup, args.no_desktop_wait, parse_targets(args.target))
     except SystemExit:
         raise
     except BaseException as exc:                               # noqa: BLE001

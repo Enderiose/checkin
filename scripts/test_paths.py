@@ -17,6 +17,7 @@ try:
         PROJECT_DIR, TRAE_EXE, WORKBUDDY_EXE,
         TRAE_CHECKIN_SCRIPT, WORKBUDDY_CHECKIN_SCRIPT,
         PYTHON_EXE, NODE_EXE, LOG_DIR,
+        WEB_CHECKIN_SCRIPT, WEB_CONFIG_PATH,
     )
 except Exception as exc:                                       # noqa: BLE001
     print("[ERROR] Could not import config.py: %s: %s" % (type(exc).__name__, exc))
@@ -52,6 +53,16 @@ def main():
     print("Check-in Script Paths:")
     results.append(test_path(TRAE_CHECKIN_SCRIPT, "Trae Check-in Script"))
     results.append(test_path(WORKBUDDY_CHECKIN_SCRIPT, "WorkBuddy Check-in Script"))
+    results.append(test_path(WEB_CHECKIN_SCRIPT, "Web Check-in Script"))
+
+    print()
+    print("Web Check-in Config:")
+    if os.path.exists(WEB_CONFIG_PATH):
+        print("[OK] Web site config: %s" % WEB_CONFIG_PATH)
+    else:
+        print("[WARN] Web site config missing: %s" % WEB_CONFIG_PATH)
+        print("       create it with:  cp .config.example .config")
+        print("       (only needed for the web check-in; not counted as a failure)")
 
     print()
     print("Log Directory:")

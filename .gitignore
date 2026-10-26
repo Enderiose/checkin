@@ -1,6 +1,11 @@
-# Log files produced by scripts/auto_checkin.py
+# Log files produced by scripts/auto_checkin.py and scripts/web_checkin.py
 logs/
 *.log
+
+# Local web check-in configuration + session data (copy from .config.example)
+.config
+cookies/
+screenshots/
 
 # Python bytecode / caches
 __pycache__/
@@ -10,3 +15,4 @@ __pycache__/
 # Local scratch files
 nul
 _smoke_test.py
+.tmp/

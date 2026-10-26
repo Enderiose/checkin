@@ -1,0 +1,65 @@
+# checkin - web check-in site list (TOML)
+# ---------------------------------------------------------------------------
+# Copy this file to `.config` and edit it:
+#     cp .config.example .config          (Windows: copy .config.example .config)
+#
+# Each site needs exactly two fields:
+#   name - any label; also used as the cookie file name (cookies/<name>.json)
+#   url  - the page that shows the daily check-in button after you log in
+#          (a normal page link, NOT the backend API endpoint - the API needs a
+#           live token/signature that only the page itself can produce)
+#
+# Optional third field:
+#   login_only - set to true for "public welfare" sites where being logged in and
+#                opening the page IS the daily check-in (there is no check-in
+#                button). A successfully opened page then counts as success,
+#                instead of failing with "no check-in button found".
+#
+# Optional JSON API fields (for sites whose check-in is an API call, often hidden
+# behind a tab or only triggered by the site's own JavaScript):
+#   checkin_api  - endpoint that performs the check-in (relative to url, or an
+#                  absolute URL). It is called silently with the saved cookies
+#                  first and, when that fails, from inside the browser - so a WAF
+#                  challenge or a login kept in localStorage is already satisfied.
+#   csrf_api     - endpoint returning {"csrf": "..."}; the token is sent as the
+#                  X-CSRF header with the check-in request.
+#   browser_only - never try the silent HTTP tier (set it for sites behind a WAF
+#                  that only a real browser can pass, e.g. Any Router).
+#
+# How a check-in runs (nothing else to configure):
+#   1. silent   GET the url with the saved cookies; if the page says
+#               "already checked in" or "success" we are done - no window
+#   2. headless if step 1 cannot confirm (401/403, login redirect, unclear
+#               text), open the url in headless Chrome/Edge, click the
+#               check-in button and read the result (screenshot saved)
+#
+# Log in once per site so the cookies exist:
+#     python scripts\web_checkin.py --login <name>
+#
+# The real `.config` is git-ignored; this template is the one that is committed.
+# ---------------------------------------------------------------------------
+
+# Uncomment and edit this block for each site you want to check in:
+#
+# [[sites]]
+# name = "example"
+# url = "https://example.com/checkin"
+#
+# [[sites]]
+# name = "another-site"
+# url = "https://another.example.com/daily"
+#
+# Login-only site (opening the page is the check-in):
+# [[sites]]
+# name = "Any Router"
+# url = "https://anyrouter.top/console/topup"
+# login_only = true
+# checkin_api = "/api/user/sign_in"
+# browser_only = true
+#
+# Site whose check-in is a JSON API behind a tab (404-style):
+# [[sites]]
+# name = "404"
+# url = "https://wb.404-found.uk/hb/me"
+# checkin_api = "/hb/api/v1/checkin"
+# csrf_api = "/hb/api/v1/me"

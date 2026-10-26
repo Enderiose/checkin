@@ -6,16 +6,23 @@ rem NOTE: deliberately no "chcp 65001" here - schtasks prints localized (GBK)
 rem text and would become unreadable in a UTF-8 console.
 
 echo ============================================================
-echo Auto Check-in Tool
+echo checkin - Auto Check-in Tool
 echo ============================================================
 echo.
 echo Project Directory: %~dp0
 echo.
 echo Files:
 echo   config.py                - Configuration file
+echo   .config                  - Web check-in site list (TOML, git-ignored)
+echo   .config.example          - Template: copy .config.example .config
 echo   scripts\auto_checkin.py  - Main check-in script
+echo   scripts\web_checkin.py   - Web check-in (silent HTTP, headless browser)
+echo   scripts\browser_engine.py - Browser engine (CDP, Selenium fallback)
 echo   scripts\test_paths.py    - Path test script
-echo   logs\                    - Daily logs (auto_checkin_YYYY-MM-DD.log)
+echo   scripts\select_targets.ps1 - Interactive target picker for the installer
+echo   scripts\select_schedule.ps1 - Schedule picker (logon / daily time)
+echo   scripts\clean_strays.py  - Remove stray reserved-name files (nul, con, ...)
+echo   logs\                    - Daily logs (auto_checkin_*.log, web_checkin_*.log)
 echo   install_startup_task.bat - Install auto check-in task
 echo   uninstall_startup_task.bat - Uninstall auto check-in task
 echo   test_checkin.bat         - Test check-in functionality
@@ -31,8 +38,10 @@ echo.
 echo ============================================================
 echo Quick Start:
 echo   1. Run python scripts\test_paths.py to validate paths
-echo   2. Double-click install_startup_task.bat to install
-echo   3. Run python scripts\auto_checkin.py to test
+echo   2. For web check-in: copy .config.example .config and edit it
+echo   3. Run python scripts\web_checkin.py --login NAME once per site
+echo   4. Double-click install_startup_task.bat to install
+echo   5. Run python scripts\auto_checkin.py to test
 echo ============================================================
 echo.
 echo Startup Task (AutoCheckinOnStartup):

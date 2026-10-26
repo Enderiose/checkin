@@ -25,7 +25,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [1/3] Test path validation...
+echo [1/4] Test path validation...
 python scripts\test_paths.py
 if errorlevel 1 (
     echo [ERROR] Path validation failed. Please check configuration.
@@ -34,7 +34,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [2/3] Test Trae check-in (test only, no actual check-in)...
+echo [2/4] Test Trae check-in (test only, no actual check-in)...
 echo Note: This will try to connect to Trae and perform check-in
 echo.
 pause
@@ -48,7 +48,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [3/3] Test WorkBuddy check-in (test only, no actual check-in)...
+echo [3/4] Test WorkBuddy check-in (test only, no actual check-in)...
 echo Note: This will try to operate WorkBuddy window
 echo.
 pause
@@ -59,6 +59,19 @@ if errorlevel 1 (
     echo [WARN] WorkBuddy check-in test failed
 ) else (
     echo [OK] WorkBuddy check-in test completed
+)
+
+echo.
+echo [4/4] Test web check-in configuration (dry run, no check-in)...
+if not exist "%~dp0.config" (
+    echo [WARN] .config not found - create it with: copy .config.example .config
+) else (
+    python scripts\web_checkin.py --dry-run
+    if errorlevel 1 (
+        echo [WARN] Web check-in config invalid - see the messages above
+    ) else (
+        echo [OK] Web check-in config loaded
+    )
 )
 
 echo.

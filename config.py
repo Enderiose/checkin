@@ -1,4 +1,4 @@
-# Auto Check-in Configuration File
+# checkin - Auto Check-in Configuration File
 # Modify the following configuration to suit your environment
 #
 # Third-party notice: the check-in implementation scripts referenced below come from
@@ -103,6 +103,44 @@ WORKBUDDY_CLOSE_DELAY = 3
 # machine's screen differs, because a maximized WorkBuddy window lays its buttons out
 # differently and the hard-coded clicks would then miss their target.
 WORKBUDDY_COORD_BASELINE = (2560, 1440)
+
+# ============================================================
+# Web Check-in (silent HTTP first, headless browser fallback)
+# ============================================================
+# The site list lives in `.config` (TOML, read with the Python 3.11+ stdlib).
+# Copy the template once and edit it:
+#     cp .config.example .config        (Windows: copy .config.example .config)
+# Each site only needs a name and a url; see .config.example for the format.
+
+# Site list file (git-ignored; the committed template is .config.example)
+WEB_CONFIG_PATH = os.path.join(PROJECT_DIR, ".config")
+
+# Web check-in script (relative to this project directory, usually no need to modify)
+WEB_CHECKIN_SCRIPT = os.path.join(PROJECT_DIR, "scripts", "web_checkin.py")
+
+# Per-request timeout (seconds) for the silent HTTP attempt and for page loads
+WEB_TIMEOUT = 30
+
+# Seconds to wait for the result after clicking a check-in button in the browser
+WEB_VERIFY_TIMEOUT = 15
+
+# Total timeout (seconds) for the whole web check-in child process
+WEB_CHECKIN_TIMEOUT = 300
+
+# Use a headless browser for the fallback (False = show the window, for debugging)
+WEB_HEADLESS = True
+
+# Which browser the web fallback uses:
+#   "auto"   = Chrome first, Edge only if Chrome cannot start (default)
+#   "chrome" = only Chrome
+#   "edge"   = only Edge
+WEB_BROWSER = "auto"
+
+# Saved cookies (cookies/<site>.json) and browser profiles. Git-ignored.
+WEB_COOKIE_DIR = os.path.join(PROJECT_DIR, "cookies")
+
+# Fallback screenshots (screenshots/<site>_<tag>_<timestamp>.png). Git-ignored.
+WEB_SCREENSHOT_DIR = os.path.join(PROJECT_DIR, "screenshots")
 
 # ============================================================
 # Timeout Configuration (seconds)
