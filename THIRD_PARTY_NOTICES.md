@@ -65,7 +65,9 @@ MIT License（摘要）
 | 收录目录 / Vendored path | `workbuddy-checkin/` |
 | 上游仓库 / Upstream | https://github.com/GitOfUser/workbuddy-checkin |
 | 作者 / Author | GitOfUser |
-| 收录提交 / Vendored commit | `cb9f5e21a1fc447a59d16c1184dc671727058656`（`fix(scripts/checkin_py): adjust checkin mouse coordinates`） |
+| 收录提交 / Vendored commit | `36015f7a0fc1c79eacd09814f9352b66444611e7`（在 `cb9f5e21a1fc447a59d16c1184dc671727058656` 之上叠加本地补丁，见下） |
+| 子模块地址 / Submodule URL | https://github.com/Enderiose/workbuddy-checkin （上游的 fork，仅用于承载本地补丁提交；上游仍为上方 `GitOfUser/workbuddy-checkin`） |
+| 本地补丁备份 / Patch backup | `patches/workbuddy-checkin-local.patch`（不依赖子模块也能复现本地改动） |
 | 许可证 / License | 上游未提供许可证文件，版权归原作者所有（All rights reserved） |
 | 本地是否修改 / Local modifications | **有本地补丁 / Local patches applied**（2026-09-22）：① 点击坐标支持环境变量覆盖 `WORKBUDDY_MENU_X/Y`、`WORKBUDDY_CHECKIN_X/Y`，未设置时保持上游原值 207/983 与 112/487；② 新增流程开关 `WORKBUDDY_SKIP_MENU`，可在首页直接签到、跳过头像菜单（默认 `0` = 上游原始流程）；③ 新增点击校验 `WORKBUDDY_VERIFY`：等按钮渲染、确认窗口在前台、点击后对比截图、无变化则重试，找不到按钮则按"已签到"处理（默认 `1`；设 `0` 退回上游盲点行为）；④ 启动时打印坐标/流程/校验状态与窗口矩形；⑤ 主流程包裹 `try/except`，异常时弹窗提示。上游的启动、查找窗口、关闭窗口与点击序列均保留。另生成运行时缓存 `scripts/__pycache__/`。 |
 

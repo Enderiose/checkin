@@ -1,0 +1,3 @@
+[submodule "workbuddy-checkin"]
+	path = workbuddy-checkin
+	url = https://github.com/Enderiose/workbuddy-checkin.git
