@@ -114,6 +114,15 @@ except Exception:                                              # noqa: BLE001
     _CLEAN_STRAYS = None
     _STRAYS_DIR = PROJECT_DIR
 
+# Cookie expiry notifications (WeCom hook). A broken notifier must never break a
+# check-in run, so every failure here is non-fatal.
+try:
+    import notify as notify_module
+    NOTIFY_ERROR = None
+except Exception as _notify_exc:                               # noqa: BLE001
+    notify_module = None
+    NOTIFY_ERROR = "%s: %s" % (type(_notify_exc).__name__, _notify_exc)
+
 # ============================================================
 # Logging (file + console), crash-safe
 # ============================================================
@@ -542,17 +551,22 @@ def run_workbuddy_checkin():
 
 
 def run_web_checkin():
-    """Execute the web check-in (silent HTTP first, headless browser fallback)."""
+    """Execute the web check-in (silent HTTP first, headless browser fallback).
+
+    Returns (ok, expired_sites): `expired_sites` holds the sites whose saved
+    session was rejected (web_checkin.py's LOGIN_REQUIRED marker lines), which is
+    what the notification step reports as "your cookie expired".
+    """
     log_separator("-")
     log("Starting web check-in...")
 
     if not os.path.exists(WEB_CHECKIN_SCRIPT):
         log("Web check-in script missing, skipping: %s" % WEB_CHECKIN_SCRIPT, "ERROR")
-        return False
+        return False, []
     if not os.path.exists(WEB_CONFIG_PATH):
         log("Web check-in config missing, skipping: %s" % WEB_CONFIG_PATH, "ERROR")
         log("  create it first:  cp .config.example .config", "ERROR")
-        return False
+        return False, []
 
     log("Web check-in config: %s" % WEB_CONFIG_PATH)
     log("Web browser mode   : %s" % ("headless" if WEB_HEADLESS else "visible (debug)"))
@@ -564,15 +578,78 @@ def run_web_checkin():
 
     result = run_command(cmd, WEB_CHECKIN_TIMEOUT, "Web check-in script")
     if result is None:
-        return False
+        return False, []
+
+    expired_sites = _parse_login_required(result.stdout)
+    if expired_sites:
+        log("Rejected sessions reported by web_checkin.py: %s" % ", ".join(expired_sites), "WARN")
+
     if result.returncode == 0:
         log("Web check-in successful!", "SUCCESS")
-        return True
+        return True, expired_sites
     if result.returncode == 2:
         log("Web check-in configuration problem (see the log above)", "ERROR")
-        return False
+        return False, expired_sites
     log("Web check-in failed (exit code %s)" % result.returncode, "ERROR")
-    return False
+    return False, expired_sites
+
+
+def _parse_login_required(stdout):
+    """Extract `LOGIN_REQUIRED site=<name>` marker lines from the child output."""
+    sites = []
+    for line in (stdout or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = line.strip()
+        if not line.startswith("LOGIN_REQUIRED"):
+            continue
+        _, _, pair = line.partition("site=")
+        name = pair.strip()
+        if name and name not in sites:
+            sites.append(name)
+    return sites
+
+
+def run_notifications(expired_sites, disabled=False, dry_run=False):
+    """Send the cookie-expiry notification, at most once per day per status."""
+    log_separator("-")
+    log("Notification step...")
+
+    if disabled:
+        log("Notifications disabled by --no-notify, skipping")
+        return False
+    if notify_module is None:
+        log("Notifier unavailable (%s), skipping notifications" % NOTIFY_ERROR, "WARN")
+        return False
+
+    try:
+        cfg = notify_module.load_config()
+    except Exception as exc:                                   # noqa: BLE001
+        log("Could not load notify config: %s: %s" % (type(exc).__name__, exc), "WARN")
+        return False
+
+    if not cfg["enabled"]:
+        log("Notifications are disabled in .config ([notify] enabled = false)")
+        return False
+
+    log("Notify mode: %s (warn window: %d day(s))" % (cfg["on"], cfg["expiry_warn_days"]))
+    if cfg["on"] != "expired":
+        log("Only the 'expired' mode is used by this step; failure/always are handled "
+            "by notify.py itself", "WARN")
+
+    try:
+        sent = notify_module.notify_cookie_status(
+            expired_sites=expired_sites,
+            log_path=_log_path,
+            dry_run=dry_run,
+            cfg=cfg,
+            logger=log,
+        )
+    except Exception as exc:                                   # noqa: BLE001
+        log("Notification step failed: %s: %s" % (type(exc).__name__, exc), "WARN")
+        return False
+
+    if sent:
+        log("Cookie expiry notification handled", "SUCCESS")
+    return sent
 
 
 # ============================================================
@@ -590,6 +667,10 @@ def parse_args(argv=None):
                         help="what to check in: trae, workbuddy, web, all (default), or apps "
                              "(= trae+workbuddy). Repeatable and comma-separated, "
                              "e.g. --target trae,web")
+    parser.add_argument("--no-notify", action="store_true",
+                        help="do not send the cookie-expiry notification even if a cookie is dead")
+    parser.add_argument("--notify-dry-run", action="store_true",
+                        help="build the notification and log it, but do not send it")
     return parser.parse_args(argv)
 
 
@@ -623,7 +704,8 @@ def parse_targets(values):
     return picked or set(ALL_TARGETS)
 
 
-def run(startup_mode, skip_desktop_wait=False, targets=None):
+def run(startup_mode, skip_desktop_wait=False, targets=None,
+        notify_disabled=False, notify_dry_run=False):
     targets = set(targets) if targets else set(ALL_TARGETS)
     log_environment(startup_mode)
     _prune_old_logs(LOG_KEEP_DAYS)
@@ -678,8 +760,9 @@ def run(startup_mode, skip_desktop_wait=False, targets=None):
     else:
         log("WorkBuddy not selected, skipped")
 
+    expired_sites = []
     if web_ready:
-        results["web"] = run_web_checkin()
+        results["web"], expired_sites = run_web_checkin()
     elif want_web:
         log("Web check-in unavailable, skipped", "WARN")
     else:
@@ -702,6 +785,10 @@ def run(startup_mode, skip_desktop_wait=False, targets=None):
     success_count = sum(results.values())
     total_tasks = sum([trae_ready, workbuddy_ready, web_ready])
 
+    # Notification last, so the message can describe the real outcome. This never
+    # changes the exit code: a notification failure is not a check-in failure.
+    run_notifications(expired_sites, disabled=notify_disabled, dry_run=notify_dry_run)
+
     if success_count == total_tasks:
         log("All check-in tasks completed!", "SUCCESS")
         return 0
@@ -722,7 +809,8 @@ def main(argv=None):
     _install_crash_handlers()
 
     try:
-        exit_code = run(args.startup, args.no_desktop_wait, parse_targets(args.target))
+        exit_code = run(args.startup, args.no_desktop_wait, parse_targets(args.target),
+                        notify_disabled=args.no_notify, notify_dry_run=args.notify_dry_run)
     except SystemExit:
         raise
     except BaseException as exc:                               # noqa: BLE001

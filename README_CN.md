@@ -49,6 +49,15 @@ Windows `cmd.exe` 没有 `cp`，用：
 copy .config.example .config
 ```
 
+如果要用 cookie 过期通知，再创建 token 文件（已被 git 忽略），把真实的
+`<WECOM_HOOK_TOKEN>` 写进最后一行：
+
+```cmd
+copy .hook_token.example .hook_token
+```
+
+也可以用环境变量 `CHECKIN_WEBHOOK_TOKEN` 代替这个文件。
+
 然后编辑 `.config`，每个站点只需要 `name` 和 `url` 两个字段：
 
 ```toml
@@ -199,13 +208,102 @@ python scripts\web_checkin.py --force-browser  # 跳过静默尝试
 python scripts\web_checkin.py --silent-only    # 绝不打开浏览器
 ```
 
+### Cookie 过期通知
+
+保存的登录态随时可能失效：站点自己让它过期、你在别处退出登录、或者服务端撤销会话。
+没有通知时，每天的定时任务只在 `logs\` 里默默失败，你往往几天后才发现。通知功能就是
+补上这一环——每次运行最多发**一条汇总消息**，通过企业微信 hook 接口推送。
+
+什么情况会发（`.config` 中 `[notify]` 的 `on`）：
+
+| `on` | 发送条件 |
+|---|---|
+| `expired`（默认） | 某个 Cookie 已失效，或在 `expiry_warn_days` 天内即将到期 |
+| `failure` | 任意签到任务失败 |
+| `always` | 每次运行都发（成功也发） |
+| `enabled = false` | 永不发送 |
+
+「失效」的判定依据，从强到弱：
+
+1. 站点返回 HTTP 401/403（静默级与浏览器级都算）
+2. 被重定向到登录页
+3. 页面/浏览器文案提示需要登录（“请先登录”、“not logged in” 等）
+4. `cookies\<站点>.json` 里的 `expiry` 字段（短命的 WAF Cookie 会被忽略）——
+   这一条让它能在 Cookie 死掉**之前**就按 `expiry_warn_days`（默认 3 天）提前提醒
+
+`web_checkin.py` 对每个失效站点输出一行机器可读标记（`LOGIN_REQUIRED site=<名称>`）；
+`auto_checkin.py` 解析这些行，渲染一条消息，并对同一状态**每天最多发一次**
+（记录在 `logs\.notify_state.json`）。推送失败只写日志，**不会改变退出码**——通知坏了不能
+把成功的签到变成失败。
+
+Token 不入库。二选一提供：
+
+```cmd
+setx CHECKIN_WEBHOOK_TOKEN <WECOM_HOOK_TOKEN>
+```
+
+或在项目根放一个单行、已被 git 忽略的 `.hook_token` 文件。Token 通过 `X-Hook-Token`
+请求头发送，不会出现在 URL 或访问日志里。
+
+```cmd
+python scripts\notify.py --selftest        # 发一条连通性测试
+python scripts\notify.py "构建完成"         # 发任意消息
+python scripts\notify.py --check-expiry    # 只检查 Cookie 到期情况，不发送
+python scripts\notify.py --show-config     # 查看生效配置（不会打印 token）
+python scripts\notify.py --dry-run --selftest
+python scripts\auto_checkin.py --notify-dry-run   # 只记录消息，不发送
+python scripts\auto_checkin.py --no-notify        # 跳过通知步骤
+```
+
+返回 HTTP 403 + errcode `40001` 表示 token 与 hook 宿主上的 `WECOM_HOOK_TOKEN` 不一致。
+接口限流为 30 次 / 60 秒；本项目每次运行最多发一条汇总，远不会触顶。
+
+**本地兜底**：只要投递失败（token 错、宿主不可达、被限流，或根本没有配置 token），
+同一条消息会同时以 Windows 弹窗形式弹出，开关为 `[notify] popup_fallback`（默认 `true`）。
+弹窗跑在独立的分离进程里、始终置顶，并在 `popup_timeout` 秒（默认 60）后自动关闭——
+所以换 token 期间告警不会静悄悄丢失，卡住的弹窗也不会拖住定时任务。
+可用 `popup_fallback = false` 或 `CHECKIN_NOTIFY_POPUP=false` 关闭。
+
+#### Webhook 接口说明
+
+任何接受 JSON `POST` 的端点都能用——不必须是官方 `qyapi.weixin.qq.com` 机器人地址。
+
+| | |
+|---|---|
+| URL | 完整端点，如 `http://192.168.2.6:8645/hook`、`http://127.0.0.1:8645/hook`、`https://<主机>:<端口>/hook` |
+| 认证 | `X-Hook-Token: <WECOM_HOOK_TOKEN>` 请求头（**推荐**，token 不进访问日志）或 `?token=<WECOM_HOOK_TOKEN>` |
+| 请求体 | `{"text": "..."}` 或 `{"msgtype":"text","text":{"content":"..."}}`；也接受 `{"markdown":{"content":"..."}}` 和纯文本 body |
+| 路由 | `"to": "<会话>"` 覆盖目标；`"mode": "notify"`（默认，不跑 LLM）或 `"mode": "agent"`（让 bot 真的回一轮） |
+| 成功 | `{"errcode": 0, "errmsg": "ok", "ok": true, "mode": "notify", "message_id": "..."}` |
+| 探测 | 不带 `text` 的 `GET` 返回 `{"ok":true,"probe":true}` 且不发送消息，第三方界面的“测试”按钮可放心点 |
+| 限流 | 通常 30 次 / 60 秒（按进程）；本项目每次运行最多发一条汇总 |
+
+常见错误码：
+
+| errcode | HTTP | 含义 |
+|---|---|---|
+| 40001 | 403 | token 错误 — 会触发本地弹窗兜底 |
+| 45009 | 429 | 触发限流 — 先重试（2s / 5s），仍失败则弹窗 |
+| 40058 | 400 | body 里没有文本 |
+| 50001 | 503 | hook 宿主上未配置 token（端点禁用） |
+| 50002 | 500 | 没有目标会话 |
+| 50003 | 502 | 消息侧拒绝发送 |
+| 40006 | 413 | body 过大 |
+
+Token 文件规则（`.hook_token`，从 `.hook_token.example` 复制）：空行和 `#` 注释会被忽略，
+第一条剩余行即 token；轮换后**不需要重启**，下次运行会重新读取。
+`CHECKIN_WEBHOOK_TOKEN` 环境变量优先级高于该文件；如果文件里还是 `<...>` 占位符，
+则视为未配置并走弹窗提示。
+
 ### 项目结构
 
 ```
 checkin/
 ├── config.py                  # 配置文件（路径、超时、网页选项）
 ├── .config                    # 网页站点列表（TOML，已被 git 忽略，从 .config.example 复制）
-├── .config.example            # .config 的模板（提交到仓库）
+├── .config.example            # .config 的模板（提交到仓库，含 [notify] webhook 说明）
+├── .hook_token                # webhook token（已被 git 忽略，从 .hook_token.example 复制）
+├── .hook_token.example        # .hook_token 的模板（提交到仓库）
 ├── cookies/                   # 保存的 Cookie + 浏览器 profile（已被 git 忽略）
 ├── screenshots/               # 网页签到截图（已被 git 忽略）
 ├── logs/                      # 按天日志目录（已被 git 忽略）
@@ -214,6 +312,7 @@ checkin/
 ├── scripts/
 │   ├── auto_checkin.py        # 主调度脚本（含日志/崩溃捕获）
 │   ├── web_checkin.py         # 网页签到（静默 HTTP -> 无头浏览器）
+│   ├── notify.py              # Cookie 过期通知（企业微信 hook）
 │   ├── browser_engine.py      # CDP / Selenium 浏览器引擎
 │   ├── select_targets.ps1     # 安装脚本使用的交互式目标选择器
 │   ├── test_paths.py          # 路径验证

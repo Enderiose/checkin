@@ -1,0 +1,25 @@
+# checkin - WeCom (企业微信) hook token
+# ---------------------------------------------------------------------------
+# Copy this file to `.hook_token` and replace the placeholder below:
+#     cp .hook_token.example .hook_token        (Windows: copy .hook_token.example .hook_token)
+#
+# `.hook_token` is git-ignored. Never commit the real value, never paste it into
+# an issue, a log or a README - in documentation it is always written as
+# <WECOM_HOOK_TOKEN>.
+#
+# The token is sent as the `X-Hook-Token` request header (not in the URL), so it
+# does not leak into access logs.
+#
+# Precedence: the CHECKIN_WEBHOOK_TOKEN environment variable wins over this file.
+#     setx CHECKIN_WEBHOOK_TOKEN <WECOM_HOOK_TOKEN>
+#
+# Rules for this file:
+#   * lines starting with `#` and blank lines are ignored
+#   * the first remaining line is used as the token, verbatim
+#   * rotating the token needs no restart and no code change: edit this file
+#     (or the environment variable) and the next run picks it up
+#   * if the token is wrong or unset, the notification is still delivered as a
+#     local Windows popup instead of being dropped silently
+#
+# Replace the next line with the real token, then save:
+<WECOM_HOOK_TOKEN>

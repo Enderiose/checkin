@@ -63,3 +63,82 @@
 # url = "https://wb.404-found.uk/hb/me"
 # checkin_api = "/hb/api/v1/checkin"
 # csrf_api = "/hb/api/v1/me"
+
+# ---------------------------------------------------------------------------
+# Notifications - cookie expiry alerts (see scripts/notify.py)
+# ---------------------------------------------------------------------------
+# When a saved session in cookies/<name>.json stops working (HTTP 401/403, a
+# login redirect, or the site asking for a login) the run pushes ONE summary
+# message so you can re-login before the next check-in silently fails.
+#
+#   on = "expired" - only a dead/expiring cookie triggers a message (default)
+#   on = "failure" - any failed check-in run triggers a message
+#   on = "always"  - every run triggers a message
+#
+# The endpoint is a WeCom (企业微信) hook that speaks a plain JSON POST. It does
+# NOT need to be the official qyapi.weixin.qq.com robot URL - any endpoint that
+# accepts one of the body shapes below works (self-hosted bridge, gateway,
+# reverse proxy, ...).
+#
+#   url = the full endpoint, for example:
+#         http://192.168.2.6:8645/hook            (LAN, same subnet)
+#         https://<your-host>:<port>/hook         (public)
+#         http://127.0.0.1:8645/hook              (same machine / container)
+#
+# Authentication (both accepted, the header is preferred because a token in a
+# URL ends up in access logs):
+#         POST <url>          header: X-Hook-Token: <WECOM_HOOK_TOKEN>
+#         POST <url>?token=<WECOM_HOOK_TOKEN>
+#
+# Request bodies the endpoint may accept (notify.py sends body #1 or #2):
+#   1) {"text": "..."}                                  (generic)
+#   2) {"msgtype": "text", "text": {"content": "..."}}  (WeCom robot shape)
+#   3) {"markdown": {"content": "..."}}
+#   4) a raw text body  (Content-Type: text/plain)
+#   5) GET <url>?token=<WECOM_HOOK_TOKEN>&text=...
+# A GET without `text` is treated as a connectivity probe and sends nothing.
+#
+# Optional routing / mode fields in the JSON body:
+#   "to": "<name>"        override the target chat (default = the hook's own)
+#   "mode": "notify"      push a robot message only (default; no LLM, no agent)
+#   "mode": "agent"       push the text into a chat session and let the bot reply
+#
+# The token is NOT stored in this file. Provide it in one of two places:
+#   * the CHECKIN_WEBHOOK_TOKEN environment variable, or
+#   * a `.hook_token` file in the project root (git-ignored; copy
+#     .hook_token.example and replace the placeholder line).
+# Environment wins over the file. In all docs the value is written as
+# <WECOM_HOOK_TOKEN>; never commit the real one.
+#
+# When the webhook itself cannot deliver (bad token, host down, rate limited,
+# token not configured) the message is ALSO shown as a Windows popup, so a
+# token rotation can never make an alert disappear silently. The popup runs in
+# a detached process, stays on top, auto-closes after popup_timeout seconds and
+# never blocks the check-in run. Disable it with popup_fallback = false.
+#
+# [notify]
+# enabled = true
+# url = "http://192.168.2.6:8645/hook"
+# on = "expired"
+# expiry_warn_days = 3
+# to = ""                      # optional; empty = the hook's default chat
+# timeout = 8                  # per-request timeout (seconds)
+# retries = 2                  # retries on 429/5xx only, with 2s/5s backoff
+# popup_fallback = true        # Windows popup when the webhook cannot deliver
+# popup_timeout = 60           # seconds before the fallback popup closes itself
+#
+# Delivery behaviour worth knowing:
+#   * the endpoint may rate-limit (often 30 requests / 60 s); this project sends
+#     at most ONE summary per run, so that ceiling is never reached
+#   * a failed delivery is NOT recorded as "already sent", so the next run
+#     retries it
+#   * the same status is sent at most once per day (logs/.notify_state.json)
+#   * responses look like {"errcode": 0, "errmsg": "ok", "ok": true, ...};
+#     0 means delivered. Common errors:
+#         40001 / HTTP 403  wrong token (this is what the popup covers)
+#         45009 / HTTP 429  rate limited (retried, then popped up)
+#         40058 / HTTP 400  no text in the body
+#         50001 / HTTP 503  token not configured on the hook host
+#         50002 / HTTP 500  no target chat
+#         50003 / HTTP 502  WeCom side rejected the message
+#         40006 / HTTP 413  body too large

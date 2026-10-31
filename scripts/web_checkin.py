@@ -118,6 +118,15 @@ FAILURE_KEYWORDS = [
 ]
 LOGIN_URL_MARKERS = ["login", "signin", "sign-in", "passport", "sso", "auth", "account"]
 
+# Text fragments that positively indicate the site considers us logged out.
+# Kept separate from FAILURE_KEYWORDS because only these may turn a failed
+# check-in into a "your cookie expired" report.
+LOGIN_REQUIRED_KEYWORDS = [
+    "请先登录", "请登录", "未登录", "登录后", "登录已过期", "登录过期", "重新登录",
+    "not logged in", "login required", "sign in first", "please log in", "please login",
+    "session expired", "unauthorized",
+]
+
 # Text fragments that identify a clickable check-in button
 CHECKIN_BUTTON_TEXTS = [
     "立即签到", "签到", "打卡", "领取", "立即领取", "领取奖励",
@@ -450,6 +459,12 @@ def looks_like_login_url(url):
     return any(marker in low for marker in LOGIN_URL_MARKERS)
 
 
+def mentions_login_required(text):
+    """True when the rendered page text says we are logged out."""
+    low = (text or "").lower()
+    return any(keyword.lower() in low for keyword in LOGIN_REQUIRED_KEYWORDS)
+
+
 def response_body(response):
     """Decode a response as UTF-8 when possible.
 
@@ -487,7 +502,9 @@ def try_silent(site, timeout):
 
     When the site declares a JSON `checkin_api`, that endpoint is called instead
     of scraping the page. Returns (status, detail) with status in
-    success/already/fallback.
+    success/already/login_required/fallback. "login_required" means the site
+    itself rejected the saved session (HTTP 401/403 or a login redirect), which
+    is the strongest possible evidence that the cookie file is stale.
     """
     try:
         import requests
@@ -519,9 +536,9 @@ def try_silent(site, timeout):
     log("Silent attempt: HTTP %s -> %s" % (response.status_code, response.url))
 
     if response.status_code in (401, 403):
-        return "fallback", "HTTP %s (needs a real browser session)" % response.status_code
+        return "login_required", "HTTP %s (the saved session was rejected)" % response.status_code
     if looks_like_login_url(response.url) and response.url != site["url"]:
-        return "fallback", "redirected to a login page: %s" % response.url
+        return "login_required", "redirected to a login page: %s" % response.url
 
     body = response_body(response)
     content_type = response.headers.get("Content-Type", "")
@@ -557,6 +574,9 @@ def _silent_api(site, session, timeout):
         except Exception as exc:                               # noqa: BLE001
             return "fallback", "csrf request failed: %s: %s" % (type(exc).__name__, exc)
         log("Silent API: GET %s -> HTTP %s" % (csrf_url, csrf_response.status_code))
+        if csrf_response.status_code in (401, 403):
+            return "login_required", ("csrf endpoint returned HTTP %s (the saved session "
+                                      "was rejected)" % csrf_response.status_code)
         if csrf_response.status_code >= 400:
             return "fallback", "csrf endpoint returned HTTP %s" % csrf_response.status_code
         try:
@@ -573,6 +593,9 @@ def _silent_api(site, session, timeout):
         return "fallback", "check-in request failed: %s: %s" % (type(exc).__name__, exc)
 
     log("Silent API: POST %s -> HTTP %s" % (api_url, response.status_code))
+    if response.status_code in (401, 403):
+        return "login_required", ("the check-in API returned HTTP %s - the saved session "
+                                  "was rejected" % response.status_code)
     try:
         data = response.json()
     except Exception:                                          # noqa: BLE001
@@ -686,6 +709,9 @@ def try_browser(site, headless=True, keep_open=False):
                 return "success", "page opened (login-only site)"
             screenshot(browser, site, "no_button")
             if verdict == "failure":
+                if mentions_login_required(browser.text()):
+                    return "login_required", ("the page asks for a login and has no "
+                                               "check-in button")
                 return "fallback", "no check-in button and the page looks like a failure/login page"
             return "fallback", "no check-in button found on the page"
 
@@ -760,9 +786,9 @@ def _browser_api_signin(browser, site):
     log("In-browser check-in: HTTP %s" % status_code)
     if status_code in (401, 403):
         log("Response body: %s" % (body[:200] or "<empty>"))
-        return "fallback", ("HTTP %s - the browser session is not logged in "
-                            "(run: python scripts\\web_checkin.py --login %s)"
-                            % (status_code, site["name"]))
+        return "login_required", ("HTTP %s - the browser session is not logged in "
+                                  "(run: python scripts\\web_checkin.py --login %s)"
+                                  % (status_code, site["name"]))
     try:
         data = json.loads(body)
     except Exception:                                          # noqa: BLE001
@@ -830,11 +856,16 @@ def login_site(site, keep_open=False):
 # ============================================================
 
 def process_site(site, args):
-    """Run both tiers for one site. Returns (ok, status_text)."""
+    """Run both tiers for one site. Returns (ok, status_text).
+
+    status_text is "login_required" when the site rejected the saved session in
+    both tiers - that is what turns into a "cookie expired" notification.
+    """
     log_separator("-")
     log("Site: %s -> %s" % (site["name"], site["url"]))
 
     login_only = site.get("login_only", False)
+    silent_status = "skipped"
     if site.get("checkin_api"):
         log("Mode: JSON check-in API %s" % site["checkin_api"])
     elif login_only:
@@ -845,22 +876,48 @@ def process_site(site, args):
         log("Silent attempt skipped (%s)" % reason)
     else:
         status, detail = try_silent(site, args.timeout)
+        silent_status = status
         log("Silent result: %s (%s)" % (status, detail))
         if status in ("success", "already"):
             return True, status
         if login_only and status == "opened":
             return True, "opened"
         if args.silent_only:
+            if status == "login_required":
+                return False, "login_required"
             return False, "silent attempt failed (%s)" % detail
+        if status == "login_required":
+            log("The saved session was rejected; confirming in a real browser", "WARN")
         log("Falling back to the headless browser", "WARN")
 
     try:
         status, detail = try_browser(site, headless=args.headless_mode, keep_open=args.keep_open)
     except Exception as exc:                                   # noqa: BLE001
         log("Browser fallback failed: %s: %s" % (type(exc).__name__, exc), "ERROR")
+        if silent_status == "login_required":
+            return False, "login_required"
         return False, "browser fallback failed"
     log("Browser result: %s (%s)" % (status, detail))
+    if status == "login_required":
+        return False, "login_required"
+    if status not in ("success", "already", "opened") and silent_status == "login_required":
+        # Both tiers agree there is no usable session: report the cookie as dead
+        # instead of a vague "fallback", so the notifier can act on it.
+        log("Both tiers saw a rejected session - treating the cookie as expired", "WARN")
+        return False, "login_required"
     return status in ("success", "already", "opened"), status
+
+
+def emit_login_required(site_name):
+    """Emit the machine-readable line auto_checkin.py parses for notifications."""
+    marker = "LOGIN_REQUIRED site=%s" % site_name
+    log("Login session expired for '%s' - refresh the cookie with: "
+        "python scripts\\web_checkin.py --login %s" % (site_name, site_name), "WARN")
+    try:
+        sys.stdout.write(marker + "\n")
+        sys.stdout.flush()
+    except Exception:                                          # noqa: BLE001
+        pass
 
 
 def parse_args(argv=None):
@@ -969,6 +1026,13 @@ def main(argv=None):
     log_separator()
 
     success_count = sum(1 for _, ok, _ in results if ok)
+    expired_sites = [name for name, ok, status in results if status == "login_required"]
+
+    if expired_sites:
+        log("Cookie/session expired for: %s" % ", ".join(expired_sites), "WARN")
+        for name in expired_sites:
+            emit_login_required(name)
+
     if success_count == len(results):
         log("All web check-ins completed!", "SUCCESS")
         code = 0

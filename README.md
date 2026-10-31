@@ -54,6 +54,15 @@ On Windows `cmd.exe` (no `cp`) use:
 copy .config.example .config
 ```
 
+If you plan to use cookie-expiry notifications, also create the token file
+(git-ignored) and put the real `<WECOM_HOOK_TOKEN>` into its last line:
+
+```cmd
+copy .hook_token.example .hook_token
+```
+
+Or skip the file and set `CHECKIN_WEBHOOK_TOKEN` in the environment instead.
+
 Then edit `.config` and add one block per site — each site only needs a `name` and a `url`:
 
 ```toml
@@ -215,13 +224,109 @@ python scripts\web_checkin.py --force-browser  # skip the silent attempt
 python scripts\web_checkin.py --silent-only    # never open a browser
 ```
 
+### Cookie Expiry Notifications
+
+A saved session can die at any moment: the site expires it, you log out elsewhere, or
+the server revokes it. Without a notification the daily task keeps failing silently in
+`logs\` and you only notice days later. The notifier closes that gap - one summary
+message per run, pushed through the WeCom (企业微信) hook endpoint.
+
+What triggers a message (`[notify]` → `on` in `.config`):
+
+| `on` | A message is sent when |
+|---|---|
+| `expired` (default) | a saved cookie is dead, or expires within `expiry_warn_days` |
+| `failure` | any check-in task failed |
+| `always` | every run, successful ones included |
+| `enabled = false` | never |
+
+How "dead" is decided, strongest evidence first:
+
+1. HTTP 401/403 from the site, in either tier
+2. a redirect to a login page
+3. page/browser text asking for a login ("请先登录", "not logged in", ...)
+4. the `expiry` field inside `cookies\<site>.json` (short-lived WAF cookies are
+   ignored) - this one also gives the `expiry_warn_days` (default 3) heads-up
+   *before* the cookie dies
+
+`web_checkin.py` emits one machine-readable line per dead site
+(`LOGIN_REQUIRED site=<name>`). `auto_checkin.py` parses those lines, renders a single
+message and sends it at most once per day for the same status
+(`logs\.notify_state.json`). Delivery problems are logged and never change the exit
+code - a broken notifier must not turn a successful check-in into a failure.
+
+The token is never committed. Supply it in one of two places:
+
+```cmd
+setx CHECKIN_WEBHOOK_TOKEN <WECOM_HOOK_TOKEN>
+```
+
+or a single-line, git-ignored `.hook_token` file in the project root. The token is sent
+as the `X-Hook-Token` header, so it never appears in a URL or a request log.
+
+```cmd
+python scripts\notify.py --selftest        # send a connectivity test
+python scripts\notify.py "build finished"  # send any message
+python scripts\notify.py --check-expiry    # report cookie expiry, send nothing
+python scripts\notify.py --show-config     # effective settings (token never printed)
+python scripts\notify.py --dry-run --selftest
+python scripts\auto_checkin.py --notify-dry-run   # log the message, send nothing
+python scripts\auto_checkin.py --no-notify        # skip the notification step
+```
+
+HTTP 403 with errcode `40001` means the token does not match `WECOM_HOOK_TOKEN` on the
+hook host. The endpoint allows 30 requests / 60 s; this project sends at most one
+summary per run, so that ceiling is never approached.
+
+**Local fallback.** When delivery fails for any reason (bad token, host unreachable,
+rate limited, or no token configured at all) the same message is also shown as a
+Windows popup, controlled by `[notify] popup_fallback` (default `true`). The popup runs
+in its own detached process, stays on top, and auto-closes after `popup_timeout`
+seconds (default 60) - so rotating a token can never make an alert disappear silently,
+and a stuck message box can never block the scheduled task. Disable it with
+`popup_fallback = false` or `CHECKIN_NOTIFY_POPUP=false`.
+
+#### Webhook endpoint reference
+
+Any endpoint that accepts a JSON `POST` works - it does not have to be the official
+`qyapi.weixin.qq.com` robot URL.
+
+| | |
+|---|---|
+| URL | full endpoint, e.g. `http://192.168.2.6:8645/hook`, `http://127.0.0.1:8645/hook`, `https://<host>:<port>/hook` |
+| Auth | `X-Hook-Token: <WECOM_HOOK_TOKEN>` header (**preferred**, keeps the token out of access logs) or `?token=<WECOM_HOOK_TOKEN>` |
+| Body | `{"text": "..."}` or `{"msgtype":"text","text":{"content":"..."}}`; `{"markdown":{"content":"..."}}` and a raw text body are also accepted |
+| Routing | `"to": "<chat>"` overrides the target; `"mode": "notify"` (default, no LLM) or `"mode": "agent"` (lets the bot answer) |
+| Success | `{"errcode": 0, "errmsg": "ok", "ok": true, "mode": "notify", "message_id": "..."}` |
+| Probe | `GET` without `text` returns `{"ok":true,"probe":true}` and sends nothing, so third-party "Test" buttons are safe |
+| Limits | typically 30 requests / 60 s per process; this project sends at most one summary per run |
+
+Error codes worth recognising:
+
+| errcode | HTTP | Meaning |
+|---|---|---|
+| 40001 | 403 | wrong token - triggers the local popup fallback |
+| 45009 | 429 | rate limited - retried (2s / 5s), then popped up |
+| 40058 | 400 | no text in the body |
+| 50001 | 503 | token not configured on the hook host (endpoint disabled) |
+| 50002 | 500 | no target chat |
+| 50003 | 502 | the messaging side rejected the message |
+| 40006 | 413 | body too large |
+
+Token file rules (`.hook_token`, created from `.hook_token.example`): blank lines and
+`#` comments are ignored, the first remaining line is the token, and rotating it needs
+no restart - the next run re-reads the file. The `CHECKIN_WEBHOOK_TOKEN` environment
+variable always wins over the file.
+
 ### Project Structure
 
 ```
 checkin/
 ├── config.py                  # Configuration (paths, timeouts, web options)
 ├── .config                    # Web site list (TOML, git-ignored, created from .config.example)
-├── .config.example            # Committed template for .config
+├── .config.example            # Committed template for .config (incl. [notify] webhook docs)
+├── .hook_token                # Webhook token (git-ignored, created from .hook_token.example)
+├── .hook_token.example        # Committed template for .hook_token
 ├── cookies/                   # Saved cookies + browser profiles (git-ignored)
 ├── screenshots/               # Web check-in screenshots (git-ignored)
 ├── logs/                      # Daily log files (git-ignored)
@@ -230,6 +335,7 @@ checkin/
 ├── scripts/
 │   ├── auto_checkin.py        # Main orchestrator (logging + crash handling)
 │   ├── web_checkin.py         # Web check-in (silent HTTP -> headless browser)
+│   ├── notify.py              # Cookie-expiry notifications (WeCom hook)
 │   ├── browser_engine.py      # CDP / Selenium browser engine
 │   ├── select_targets.ps1     # Interactive target picker used by the installer
 │   ├── test_paths.py          # Path validation
